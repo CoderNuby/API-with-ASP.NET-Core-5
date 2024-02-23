@@ -1,7 +1,9 @@
 ﻿
 using API.Models;
+using API.Services;
 using Microsoft.AspNetCore.JsonPatch;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.Logging;
 using System;
 using System.Data.Common;
 using System.Linq;
@@ -13,10 +15,21 @@ namespace API.Controllers
     [Route("Api/[controller]")]
     public class CastController : ControllerBase
     {
+        private readonly ILogger _logger;
+        private readonly ILocalMailService _localMailService;
+        private readonly ICastService _castService;
+
+        public CastController(ILogger<CastController> logger, ILocalMailService localMailService, ICastService castService) 
+        {
+            _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+            _localMailService = localMailService ?? throw new ArgumentNullException(nameof(localMailService));
+            _castService = castService ?? throw new ArgumentNullException(nameof(castService));
+        }
+
         [HttpGet]
         public IActionResult GetAll()
         {
-            var casts = MovieDataStore.Current.Movies.SelectMany(x => x.Casts).ToList();
+            var casts = _castService.GetAllCasts();
 
             return Ok(casts);
         }
@@ -24,7 +37,7 @@ namespace API.Controllers
         [HttpGet("{movieId}")]
         public IActionResult GetAll(int movieId)
         {
-            var casts = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId).Casts;
+            var casts = _castService.GetCastsFromMovie(movieId);
 
             if (casts == null)
                 return NotFound("Movie with the current id not found");
@@ -32,19 +45,28 @@ namespace API.Controllers
         }
 
         [HttpGet("{movieId}/{castId}")]
-        public IActionResult GetAll(int movieId, Guid castId)
+        public IActionResult Get(int movieId, Guid castId)
         {
-            var cast = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId).Casts.FirstOrDefault(x => x.Id == castId);
+            try
+            {
+                var cast = _castService.GetCast(movieId, castId);
 
-            if (cast == null)
-                return NotFound("cast not found");
-            return Ok(cast);
+                if (cast == null)
+                    return NotFound("cast not found");
+
+                return Ok(cast);
+            }
+            catch (Exception)
+            {
+                _logger.LogCritical($"An error has occurred when cast was searched, id {castId}");
+                return StatusCode(500, "An internal error server was occured");
+            }
         }
 
         [HttpGet("AllMovies/{castId}")]
         public IActionResult GetAll(Guid castId)
         {
-            var cast = MovieDataStore.Current.Movies.SelectMany(x => x.Casts).ToList().FirstOrDefault(x => x.Id == castId);
+            var cast = _castService.GetCast(castId);
 
             if (cast == null)
                 return NotFound("cast not found");
@@ -54,66 +76,44 @@ namespace API.Controllers
         [HttpPost("{movieId}")]
         public IActionResult Add(int movieId, [FromBody] CastForCreationDto cast)
         {
-            var movie = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId);
-            if (movie == null)
-                return NotFound("Movie not found");
             if (cast == null || cast.Name == null)
                 return BadRequest("Name is required");
-            cast.Id = Guid.NewGuid();
-            movie.Casts.Add(new CastDto()
-            {
-                Id = cast.Id,
-                Name = cast.Name
-            });
-            return Created("Cast created successfully", cast);
+
+            var castCreted = _castService.CreateCast(movieId, cast);
+            if (castCreted == null)
+                return BadRequest("Movie not found");
+
+            return Created("Cast created successfully", castCreted);
         }
 
         [HttpPut("{movieId}/{id}")]
         public IActionResult Update(int movieId, Guid id, [FromBody] CastForUpdateDto cast)
         {
-            var movie = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId);
-            if (movie == null)
-                return NotFound("Movie not found");
             if (cast == null || cast.Name == null)
                 return BadRequest("Name is required");
-            var castFromStore = movie.Casts.FirstOrDefault(x => x.Id == id);
-            if (castFromStore == null)
-                return NotFound("Cast not found");
-            castFromStore.Name = cast.Name;
-            return Ok("Cast created successfully");
+
+            var castUpdated = _castService.UpdateCast(movieId, id, cast);
+            if (castUpdated == null)
+                return NotFound("Movie or cast can't be found");
+
+            return Ok("Cast updated successfully");
         }
 
         [HttpPatch("{movieId}/{id}")]
         public IActionResult Update(int movieId, Guid id, [FromBody] JsonPatchDocument<CastForUpdateDto> patchDocument)
         {
-            var movie = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId);
-            if (movie == null)
-                return NotFound("Movie not found");
-            var castFromStore = movie.Casts.FirstOrDefault(x => x.Id == id);
-            if (castFromStore == null)
-                return NotFound("Cast not found");
-            var castToPatch = new CastForUpdateDto() 
-            {
-                Name = castFromStore.Name
-            };
-            patchDocument.ApplyTo(castToPatch, ModelState);
+            var cast = _castService.UpdateCast(movieId, id, patchDocument);
+            if (cast == null)
+                return NotFound("Cast or Movie not found");
 
-            if (!TryValidateModel(castToPatch))
-                return BadRequest("Name required");
-            castFromStore.Name = castToPatch.Name;
             return Ok("Cast updated successfully");
         }
 
         [HttpDelete("{movieId}/{id}")]
         public IActionResult Delete(int movieId, Guid id) 
         {
-            var movie = MovieDataStore.Current.Movies.FirstOrDefault(x => x.Id == movieId);
-            if (movie == null)
-                return NotFound("Movie not found");
-            var castFromStore = movie.Casts.FirstOrDefault(x => x.Id == id);
-            if (castFromStore == null)
-                return NotFound("Cast not found");
-            movie.Casts.Remove(castFromStore);
+            var cast = _castService.DeleteCast(movieId, id);
+            _localMailService.Send($"Cast eliminated", $"The cast with id {id} was eleminated.");
 
             return Ok("Cast deleted successfully");
         }
